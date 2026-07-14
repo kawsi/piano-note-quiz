@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>おんぷあて（さいしょうプロト）</title>
+<style>
+  :root {
+    --bg: #fef9f0;
+    --card: #ffffff;
+    --ink: #3a3a3a;
+    --accent: #ff8fab;
+    --accent2: #6db3f2;
+    --ok: #57cc99;
+    --ng: #ff8b6a;
+    --muted: #b7b0a6;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    font-family: -apple-system, "Hiragino Maru Gothic ProN", "Hiragino Sans", sans-serif;
+    background: var(--bg);
+    color: var(--ink);
+    display: flex; flex-direction: column; align-items: center;
+    min-height: 100%;
+    padding: 16px;
+    gap: 14px;
+  }
+  h1 { font-size: 20px; margin: 4px 0 0; color: var(--accent); letter-spacing: 1px; }
+  .sub { font-size: 12px; color: var(--muted); margin: -8px 0 0; }
+
+  .card {
+    background: var(--card);
+    border-radius: 24px;
+    box-shadow: 0 8px 24px rgba(0,0,0,.06);
+    width: 100%; max-width: 460px;
+    padding: 20px;
+    text-align: center;
+  }
+
+  /* 楽譜 */
+  #staffWrap { display:flex; justify-content:center; }
+  svg { width: 100%; max-width: 380px; height: auto; }
+
+  /* 出た音の名前（正解表示は伏せる） */
+  .prompt { font-size: 15px; color: var(--muted); margin: 6px 0 0; }
+
+  /* 検出中の音 */
+  .detected {
+    font-size: 56px; font-weight: 800; line-height: 1.1;
+    min-height: 64px; margin: 6px 0 0;
+    transition: color .15s, transform .15s;
+  }
+  .detected small { font-size: 20px; color: var(--muted); font-weight: 600; }
+  .listening { color: var(--muted); }
+  .match { color: var(--ok); transform: scale(1.12); }
+
+  .result { font-size: 22px; font-weight: 800; min-height: 30px; margin-top: 4px; }
+  .result.ok { color: var(--ok); }
+  .result.skip { color: var(--accent2); }
+
+  .meter {
+    height: 8px; background: #eee; border-radius: 8px; overflow: hidden; margin: 12px auto 0; max-width: 280px;
+  }
+  .meter > div { height: 100%; width: 0%; background: var(--accent2); transition: width .06s; }
+
+  .row { display:flex; gap:10px; justify-content:center; flex-wrap:wrap; margin-top: 14px; }
+  button {
+    font-family: inherit; font-size: 16px; font-weight: 700;
+    border: none; border-radius: 999px; padding: 12px 22px;
+    background: var(--accent); color: #fff; cursor: pointer;
+    box-shadow: 0 4px 0 rgba(0,0,0,.08);
+    transition: transform .05s;
+  }
+  button:active { transform: translateY(2px); }
+  button.secondary { background: var(--accent2); }
+  button.ghost { background: #efe9df; color: var(--ink); box-shadow:none; }
+  button:disabled { opacity:.4; cursor:default; }
+
+  .stats { font-size: 13px; color: var(--muted); margin-top: 10px; }
+
+  .opts { font-size: 13px; color: var(--ink); display:flex; gap:16px; justify-content:center; flex-wrap:wrap; margin-top: 4px; }
+  .opts label { display:flex; align-items:center; gap:6px; }
+
+  .note-hint { font-size: 12px; color: var(--muted); max-width: 460px; text-align:center; line-height:1.6; }
+  code { background:#efe9df; padding:1px 6px; border-radius:6px; }
+</style>
+</head>
+<body>
+  <h1>🎹 おんぷあて</h1>
+  <p class="sub">さいしょうプロト — ほんもののピアノを ひいて こたえてね</p>
+
+  <div class="card">
+    <div id="staffWrap"></div>
+    <p class="prompt">この おんぷは なに？ ピアノで ひいてみよう</p>
+
+    <div id="detected" class="detected listening">…</div>
+    <div id="result" class="result"></div>
+
+    <div class="meter"><div id="vol"></div></div>
+
+    <div class="row">
+      <button id="startBtn">▶ はじめる</button>
+      <button id="nextBtn" class="secondary" disabled>つぎの おんぷ →</button>
+      <button id="skipBtn" class="ghost" disabled>わからない</button>
+    </div>
+
+    <div class="opts">
+      <label><input type="checkbox" id="octaveChk"> オクターブも あわせる</label>
+    </div>
+
+    <div class="stats"><span id="score">0</span> もん せいかい / <span id="total">0</span> もん</div>
+  </div>
+
+  <p class="note-hint">
+    ※ マイクの きょかが ひつようです。<br>
+    ※ うごかない ときは、フォルダで <code>python3 -m http.server</code> を じっこうして
+    <code>http://localhost:8000</code> を ひらいてね（iPhone は Safari で https/localhost が ひつよう）。
+  </p>
+
+<script>
+(() => {
+  // ===== 対象の音（ド〜ド：C4〜C5）=====
+  // diatonic index: C=0,D=1,...,B=6 （+ octave*7）
+  const NOTES = [
+    { name:'ド',  letter:'C', octave:4, pc:0 },
+    { name:'レ',  letter:'D', octave:4, pc:2 },
+    { name:'ミ',  letter:'E', octave:4, pc:4 },
+    { name:'ファ', letter:'F', octave:4, pc:5 },
+    { name:'ソ',  letter:'G', octave:4, pc:7 },
+    { name:'ラ',  letter:'A', octave:4, pc:9 },
+    { name:'シ',  letter:'B', octave:4, pc:11 },
+    { name:'ド',  letter:'C', octave:5, pc:0 },
+  ];
+  const PC_NAMES = ['ド','ド♯','レ','レ♯','ミ','ファ','ファ♯','ソ','ソ♯','ラ','ラ♯','シ'];
+
+  // 五線譜（ト音記号）：E4 を最下線に置く
+  const LETTER_DIATONIC = { C:0, D:1, E:2, F:3, G:4, A:5, B:6 };
+  function diatonicIndex(letter, octave){ return LETTER_DIATONIC[letter] + octave*7; }
+  const E4_INDEX = diatonicIndex('E',4);
+
+  // ===== SVG 楽譜描画 =====
+  const W = 380, H = 200;
+  const LINE_GAP = 16;               // 線と線の間隔
+  const STEP = LINE_GAP / 2;         // 半音ならぬ「1ダイアトニック段」
+  const BOTTOM_Y = 120;              // 最下線(E4)のy
+  const STAFF_X = 40, STAFF_W = 300;
+
+  function noteY(letter, octave){
+    return BOTTOM_Y - (diatonicIndex(letter, octave) - E4_INDEX) * STEP;
+  }
+
+  function drawStaff(note){
+    const lines = [];
+    for (let i=0;i<5;i++){
+      const y = BOTTOM_Y - i*LINE_GAP;
+      lines.push(`<line x1="${STAFF_X}" y1="${y}" x2="${STAFF_X+STAFF_W}" y2="${y}" stroke="#cfc7ba" stroke-width="2"/>`);
+    }
+    // ト音記号（絵文字で簡易表現）
+    const clef = `<text x="${STAFF_X-2}" y="${BOTTOM_Y-2}" font-size="86" fill="#3a3a3a">𝄞</text>`;
+
+    const cx = STAFF_X + STAFF_W*0.62;
+    const cy = noteY(note.letter, note.octave);
+    // 加線（C4 = 最下線の1本下）
+    let ledger = '';
+    if (note.letter==='C' && note.octave===4){
+      ledger = `<line x1="${cx-18}" y1="${cy}" x2="${cx+18}" y2="${cy}" stroke="#cfc7ba" stroke-width="2"/>`;
+    }
+    const head = `<ellipse cx="${cx}" cy="${cy}" rx="11" ry="8.5" fill="#ff5d8f" transform="rotate(-18 ${cx} ${cy})"/>`;
+    const stem = `<line x1="${cx+10}" y1="${cy-2}" x2="${cx+10}" y2="${cy-52}" stroke="#ff5d8f" stroke-width="3"/>`;
+
+    return `<svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg">
+      ${lines.join('')}${clef}${ledger}${head}${stem}
+    </svg>`;
+  }
+
+  // ===== DOM =====
+  const staffWrap = document.getElementById('staffWrap');
+  const detectedEl = document.getElementById('detected');
+  const resultEl = document.getElementById('result');
+  const volEl = document.getElementById('vol');
+  const startBtn = document.getElementById('startBtn');
+  const nextBtn = document.getElementById('nextBtn');
+  const skipBtn = document.getElementById('skipBtn');
+  const octaveChk = document.getElementById('octaveChk');
+  const scoreEl = document.getElementById('score');
+  const totalEl = document.getElementById('total');
+
+  let current = null, score = 0, total = 0, solved = false;
+  let stableCount = 0, lastPc = -1;
+
+  function pickNote(){
+    let n;
+    do { n = NOTES[Math.floor(Math.random()*NOTES.length)]; }
+    while (current && n === current);
+    current = n;
+    solved = false; stableCount = 0; lastPc = -1;
+    staffWrap.innerHTML = drawStaff(n);
+    resultEl.textContent = ''; resultEl.className = 'result';
+    detectedEl.textContent = '…'; detectedEl.className = 'detected listening';
+    nextBtn.disabled = true;
+  }
+
+  // ===== 音声解析 =====
+  let audioCtx, analyser, buf, rafId, stream;
+
+  async function start(){
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: {
+        echoCancellation:false, noiseSuppression:false, autoGainControl:false
+      }});
+    } catch(e){
+      alert('マイクが つかえません: ' + e.message + '\n（https または localhost で ひらいてね）');
+      return;
+    }
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const src = audioCtx.createMediaStreamSource(stream);
+    analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 2048;
+    src.connect(analyser);
+    buf = new Float32Array(analyser.fftSize);
+
+    startBtn.style.display = 'none';
+    nextBtn.disabled = false; skipBtn.disabled = false;
+    pickNote();
+    loop();
+  }
+
+  function loop(){
+    analyser.getFloatTimeDomainData(buf);
+    // 音量メーター
+    let rms=0; for (let i=0;i<buf.length;i++) rms += buf[i]*buf[i];
+    rms = Math.sqrt(rms/buf.length);
+    volEl.style.width = Math.min(100, rms*600) + '%';
+
+    const freq = autoCorrelate(buf, audioCtx.sampleRate);
+    if (freq > 0 && !solved){
+      const midi = Math.round(12*Math.log2(freq/440) + 69);
+      const pc = ((midi % 12) + 12) % 12;
+      const octave = Math.floor(midi/12) - 1;
+      detectedEl.textContent = PC_NAMES[pc];
+      detectedEl.innerHTML = `${PC_NAMES[pc]} <small>(${octave})</small>`;
+      detectedEl.className = 'detected';
+
+      // 判定（数フレーム連続で一致したら正解＝ノイズ耐性）
+      const matchPc = (pc === current.pc);
+      const matchOct = octaveChk.checked ? (octave === current.octave) : true;
+      if (matchPc && matchOct){
+        detectedEl.classList.add('match');
+        stableCount = (lastPc === pc) ? stableCount+1 : 1;
+        lastPc = pc;
+        if (stableCount >= 3){ onCorrect(); }
+      } else {
+        stableCount = 0; lastPc = pc;
+      }
+    } else if (!solved){
+      detectedEl.textContent = 'きいています…';
+      detectedEl.className = 'detected listening';
+    }
+    rafId = requestAnimationFrame(loop);
+  }
+
+  function onCorrect(){
+    solved = true;
+    score++; total++;
+    scoreEl.textContent = score; totalEl.textContent = total;
+    resultEl.textContent = '⭕️ せいかい！ (' + current.name + ')';
+    resultEl.className = 'result ok';
+    nextBtn.disabled = false;
+  }
+
+  skipBtn.addEventListener('click', () => {
+    if (!current) return;
+    if (!solved){ total++; totalEl.textContent = total; }
+    solved = true;
+    resultEl.textContent = 'こたえ：' + current.name;
+    resultEl.className = 'result skip';
+  });
+
+  startBtn.addEventListener('click', start);
+  nextBtn.addEventListener('click', pickNote);
+
+  // ===== ピッチ検出（自己相関 ACF2+ / Chris Wilson 方式）=====
+  function autoCorrelate(buf, sampleRate){
+    let SIZE = buf.length;
+    let rms = 0;
+    for (let i=0;i<SIZE;i++){ const v=buf[i]; rms += v*v; }
+    rms = Math.sqrt(rms/SIZE);
+    if (rms < 0.012) return -1;               // 無音・小音量は無視
+
+    let r1=0, r2=SIZE-1, thres=0.2;
+    for (let i=0;i<SIZE/2;i++) if (Math.abs(buf[i])<thres){ r1=i; break; }
+    for (let i=1;i<SIZE/2;i++) if (Math.abs(buf[SIZE-i])<thres){ r2=SIZE-i; break; }
+    const b = buf.slice(r1, r2);
+    SIZE = b.length;
+
+    const c = new Array(SIZE).fill(0);
+    for (let i=0;i<SIZE;i++)
+      for (let j=0;j<SIZE-i;j++)
+        c[i] += b[j]*b[j+i];
+
+    let d=0; while (d<SIZE-1 && c[d]>c[d+1]) d++;
+    let maxval=-1, maxpos=-1;
+    for (let i=d;i<SIZE;i++){ if (c[i]>maxval){ maxval=c[i]; maxpos=i; } }
+    let T0 = maxpos;
+    if (T0<=0) return -1;
+
+    const x1=c[T0-1]||0, x2=c[T0], x3=c[T0+1]||0;
+    const a=(x1+x3-2*x2)/2, bb=(x3-x1)/2;
+    if (a) T0 = T0 - bb/(2*a);
+    const freq = sampleRate/T0;
+    if (freq < 60 || freq > 1500) return -1;  // ピアノ想定域外は捨てる
+    return freq;
+  }
+})();
+</script>
+</body>
+</html>
