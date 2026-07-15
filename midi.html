@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>きらきら星 さいてん（MIDI版）</title>
+<style>
+  :root{
+    --bg:#fef9f0; --card:#fff; --ink:#3a3a3a; --accent:#ff8fab; --accent2:#6db3f2;
+    --ok:#57cc99; --ng:#ff6b6b; --muted:#b7b0a6; --pending:#d9d2c7;
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
+  html,body{margin:0;height:100%;}
+  body{font-family:-apple-system,"Hiragino Maru Gothic ProN","Hiragino Sans",sans-serif;
+    background:var(--bg);color:var(--ink);display:flex;flex-direction:column;align-items:center;
+    min-height:100%;padding:16px;gap:14px;}
+  h1{font-size:20px;margin:4px 0 0;color:var(--accent);letter-spacing:1px;}
+  .sub{font-size:12px;color:var(--muted);margin:-8px 0 0;}
+  .card{background:var(--card);border-radius:24px;box-shadow:0 8px 24px rgba(0,0,0,.06);
+    width:100%;max-width:640px;padding:20px;text-align:center;}
+  #status{font-size:13px;font-weight:700;margin:0 0 6px;}
+  #status.ok{color:var(--ok);} #status.ng{color:var(--ng);} #status.wait{color:var(--muted);}
+  #scoreWrap{display:flex;justify-content:center;overflow-x:auto;}
+  svg{height:auto;}
+  .now{font-size:15px;color:var(--muted);margin:8px 0 0;min-height:20px;}
+  .now b{color:var(--accent);font-size:20px;}
+  .detected{font-size:15px;color:var(--muted);min-height:20px;margin-top:2px;}
+  .result{font-size:26px;font-weight:800;min-height:34px;margin-top:8px;}
+  .result.ok{color:var(--ok);}
+  .row{display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin-top:14px;}
+  button{font-family:inherit;font-size:16px;font-weight:700;border:none;border-radius:999px;
+    padding:12px 22px;background:var(--accent);color:#fff;cursor:pointer;box-shadow:0 4px 0 rgba(0,0,0,.08);}
+  button:active{transform:translateY(2px);}
+  button.secondary{background:var(--accent2);}
+  button.ghost{background:#efe9df;color:var(--ink);box-shadow:none;}
+  button:disabled{opacity:.4;cursor:default;}
+  .opts{font-size:13px;display:flex;gap:16px;justify-content:center;flex-wrap:wrap;margin-top:8px;}
+  .opts label{display:flex;align-items:center;gap:6px;}
+  .stats{font-size:13px;color:var(--muted);margin-top:8px;}
+  .hint{font-size:12px;color:var(--muted);max-width:640px;text-align:center;line-height:1.7;}
+  code{background:#efe9df;padding:1px 6px;border-radius:6px;}
+  .err{color:var(--ng);font-weight:700;}
+</style>
+</head>
+<body>
+  <h1>⭐ きらきら星 さいてん</h1>
+  <p class="sub">MIDI版 — LX-5を つないで じゅんばんに ひいてね（おんていだけ みます）</p>
+
+  <div class="card">
+    <p id="status" class="wait">MIDIに つないでいません</p>
+    <div id="scoreWrap"></div>
+    <p class="now" id="now"></p>
+    <p class="detected" id="detected"></p>
+    <p class="result" id="result"></p>
+
+    <div class="row">
+      <button id="connectBtn">🎹 つなぐ</button>
+      <button id="restartBtn" class="secondary" disabled>やりなおす</button>
+    </div>
+    <div class="opts">
+      <label><input type="checkbox" id="octaveChk"> オクターブも あわせる</label>
+    </div>
+    <div class="stats">せいかい <b id="okCount">0</b> / <span id="totalCount">0</span>　まちがい <b id="missCount">0</b></div>
+  </div>
+
+  <p class="hint">
+    ※ iPad/iPhone の Safari は Web MIDI 非対応。<b>MIDIWeb Browser</b> 等の専用アプリで このURLを ひらいてね。<br>
+    ※ PC/Mac の Chrome なら そのまま つかえます（USB か Bluetooth で LX-5 を せつぞく）。
+  </p>
+
+<script>
+(() => {
+  // ===== きらきら星（前半）=====  MIDI番号  C4=60
+  const SEQ = [
+    {midi:60,name:'ド'},{midi:60,name:'ド'},{midi:67,name:'ソ'},{midi:67,name:'ソ'},
+    {midi:69,name:'ラ'},{midi:69,name:'ラ'},{midi:67,name:'ソ'},
+    {midi:65,name:'ファ'},{midi:65,name:'ファ'},{midi:64,name:'ミ'},{midi:64,name:'ミ'},
+    {midi:62,name:'レ'},{midi:62,name:'レ'},{midi:60,name:'ド'},
+  ];
+  const PC_NAMES=['ド','ド♯','レ','レ♯','ミ','ファ','ファ♯','ソ','ソ♯','ラ','ラ♯','シ'];
+
+  // ===== 五線譜（横並び）=====
+  const LETTER_DIA={C:0,D:1,E:2,F:3,G:4,A:5,B:6};
+  const PC_TO_LETTER={0:'C',2:'D',4:'E',5:'F',7:'G',9:'A',11:'B'};
+  function diaIndex(letter,oct){return LETTER_DIA[letter]+oct*7;}
+  const E4=diaIndex('E',4);
+  const LINE_GAP=14, STEP=LINE_GAP/2, BOTTOM_Y=90, STAFF_X=44, NOTE_DX=38, PAD=30;
+
+  function midiToLetterOct(m){const pc=((m%12)+12)%12;return {letter:PC_TO_LETTER[pc]||'C',oct:Math.floor(m/12)-1};}
+  function noteY(m){const {letter,oct}=midiToLetterOct(m);return BOTTOM_Y-(diaIndex(letter,oct)-E4)*STEP;}
+
+  function drawScore(cursor,statuses){
+    const W=STAFF_X+PAD+SEQ.length*NOTE_DX, H=140;
+    let lines='';
+    for(let i=0;i<5;i++){const y=BOTTOM_Y-i*LINE_GAP;
+      lines+=`<line x1="${STAFF_X}" y1="${y}" x2="${W-10}" y2="${y}" stroke="#cfc7ba" stroke-width="1.6"/>`;}
+    const clef=`<text x="${STAFF_X-4}" y="${BOTTOM_Y-2}" font-size="74" fill="#3a3a3a">𝄞</text>`;
+    let notes='';
+    SEQ.forEach((n,i)=>{
+      const cx=STAFF_X+PAD+i*NOTE_DX, cy=noteY(n.midi);
+      const st=statuses[i];
+      let fill=st==='ok'?'#57cc99':st==='wrong'?'#ff6b6b':(i===cursor?'#ff5d8f':'#d9d2c7');
+      let ledger='';
+      if(n.midi===60){ledger=`<line x1="${cx-14}" y1="${noteY(60)}" x2="${cx+14}" y2="${noteY(60)}" stroke="#cfc7ba" stroke-width="1.6"/>`;}
+      const ring=(i===cursor)?`<circle cx="${cx}" cy="${cy}" r="15" fill="none" stroke="#ff5d8f" stroke-width="2.5"/>`:'';
+      notes+=ledger+ring+`<ellipse cx="${cx}" cy="${cy}" rx="9" ry="7" fill="${fill}" transform="rotate(-18 ${cx} ${cy})"/>`;
+      notes+=`<text x="${cx}" y="${BOTTOM_Y+34}" font-size="12" text-anchor="middle" fill="${i===cursor?'#ff5d8f':'#b7b0a6'}">${n.name}</text>`;
+    });
+    return `<svg width="${W}" viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg">${lines}${clef}${notes}</svg>`;
+  }
+
+  // ===== DOM =====
+  const $=id=>document.getElementById(id);
+  const statusEl=$('status'),scoreWrap=$('scoreWrap'),nowEl=$('now'),detectedEl=$('detected'),
+        resultEl=$('result'),connectBtn=$('connectBtn'),restartBtn=$('restartBtn'),
+        octaveChk=$('octaveChk'),okCountEl=$('okCount'),totalCountEl=$('totalCount'),missCountEl=$('missCount');
+  totalCountEl.textContent=SEQ.length;
+
+  let cursor=0, statuses=SEQ.map(()=>'pending'), okCount=0, missCount=0, finished=false;
+
+  function render(){
+    scoreWrap.innerHTML=drawScore(cursor,statuses);
+    okCountEl.textContent=okCount; missCountEl.textContent=missCount;
+    if(!finished){nowEl.innerHTML=`つぎ： <b>${SEQ[cursor].name}</b>（${cursor+1}/${SEQ.length}）`;}
+  }
+  function reset(){cursor=0;statuses=SEQ.map(()=>'pending');okCount=0;missCount=0;finished=false;
+    resultEl.textContent='';resultEl.className='result';detectedEl.textContent='';render();}
+
+  function handleNote(midi){
+    if(finished) return;
+    const pc=((midi%12)+12)%12, oct=Math.floor(midi/12)-1;
+    detectedEl.textContent=`ひいた音：${PC_NAMES[pc]} (${oct})`;
+    const exp=SEQ[cursor];
+    const okPc = pc === ((exp.midi%12)+12)%12;
+    const okOct = octaveChk.checked ? (oct === Math.floor(exp.midi/12)-1) : true;
+    if(okPc && okOct){
+      statuses[cursor]='ok'; okCount++; cursor++;
+      if(cursor>=SEQ.length){finish();} else {render();}
+    } else {
+      missCount++;
+      // 一瞬 現在音を赤く
+      statuses[cursor]='wrong'; render();
+      setTimeout(()=>{ if(!finished && statuses[cursor]==='wrong'){statuses[cursor]='pending';render();} },350);
+    }
+  }
+  function finish(){
+    finished=true;
+    const pct=Math.round(okCount/SEQ.length*100);
+    nowEl.textContent='';
+    resultEl.textContent=`🎉 かんせい！ せいかい ${okCount}/${SEQ.length}・まちがい ${missCount}（${pct}%）`;
+    resultEl.className='result ok';
+    render();
+  }
+
+  // ===== Web MIDI =====
+  async function connect(){
+    if(!navigator.requestMIDIAccess){
+      statusEl.textContent='このブラウザは Web MIDI 非対応（iPad/iPhoneは MIDIWeb Browser で開いてね）';
+      statusEl.className='ng'; return;
+    }
+    try{
+      const midi=await navigator.requestMIDIAccess({sysex:false});
+      attach(midi);
+      midi.onstatechange=()=>attach(midi);
+    }catch(e){
+      statusEl.textContent='MIDI接続に しっぱい: '+e.message; statusEl.className='ng';
+    }
+  }
+  function attach(midi){
+    const inputs=[...midi.inputs.values()];
+    inputs.forEach(inp=>{ inp.onmidimessage=onMsg; });
+    if(inputs.length){
+      statusEl.textContent='✓ つながった：'+inputs.map(i=>i.name).join(', ');
+      statusEl.className='ok';
+      restartBtn.disabled=false;
+    }else{
+      statusEl.textContent='MIDI機器が みつかりません（LX-5の電源/Bluetoothペアリングを 確認）';
+      statusEl.className='wait';
+    }
+  }
+  function onMsg(e){
+    const [st,note,vel]=e.data;
+    if((st & 0xf0)===0x90 && vel>0){ handleNote(note); }
+  }
+
+  connectBtn.addEventListener('click',connect);
+  restartBtn.addEventListener('click',reset);
+  reset();
+})();
+</script>
+</body>
+</html>
